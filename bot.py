@@ -1,8 +1,9 @@
 import logging
-import aiohttp
+import os
+import glob
 from datetime import date
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import config
 import json
 
@@ -22,107 +23,73 @@ def save_users(users):
 
 def get_user(user_id):
     users = load_users()
-    return users.get(str(user_id), {"downloads_today": 0, "last_date": None, "unlimited": False})
-
-def update_user(user_id, downloads_today, last_date, unlimited=False):
-    users = load_users()
-    users[str(user_id)] = {"downloads_today": downloads_today, "last_date": last_date, "unlimited": unlimited}
-    save_users(users)
-
-def can_download(user_id):
-    user = get_user(user_id)
-    today = date.today().isoformat()
-    if user.get("unlimited"):
-        return True, -1
-    if user.get("last_date") != today:
-        return True, config.DAILY_LIMIT_FREE
-    used = user.get("downloads_today", 0)
-    remaining = config.DAILY_LIMIT_FREE - used
-    return remaining > 0, remaining
+    return users.get(str(user_id), {"downloads": 0})
 
 def increment_download(user_id):
-    user = get_user(user_id)
-    today = date.today().isoformat()
-    if user.get("unlimited"):
-        return
-    if user.get("last_date") != today:
-        update_user(user_id, 1, today)
-    else:
-        update_user(user_id, user.get("downloads_today", 0) + 1, today)
+    users = load_users()
+    uid = str(user_id)
+    if uid not in users:
+        users[uid] = {"downloads": 0}
+    users[uid]["downloads"] = users[uid].get("downloads", 0) + 1
+    save_users(users)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    today = date.today().isoformat()
-    remaining = config.DAILY_LIMIT_FREE if user.get("last_date") != today else config.DAILY_LIMIT_FREE - user.get("downloads_today", 0)
-    status = "UNLIMITED" if user.get("unlimited") else f"Free ({remaining}/{config.DAILY_LIMIT_FREE} today)"
-    await update.message.reply_text(f"""Video Downloader Bot
+    keyboard = [[InlineKeyboardButton("❤️ Support the bot", callback_data="donate")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("""🎵 YouTube Audio Downloader Bot
 
-Status: {status}
+100% FREE — No limits, no registration!
 
-Supported Platforms:
-- YouTube
-- TikTok
-- Instagram
-- Twitter/X
-- Facebook
-- Reddit
+Just paste any YouTube link and get the MP3 instantly!
 
-Free Tier:
-- {config.DAILY_LIMIT_FREE} videos per day
-- Just paste any link!
+Supported:
+- YouTube videos
+- YouTube Music
+- YouTube Shorts
 
-/unlimited - Remove limits
-/help - How to use""")
+/help - How to use
+/donate - Support the bot ❤️""", reply_markup=reply_markup)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("""How to Use:
 
-1. Copy any video link
+1. Copy any YouTube link
 2. Paste it here
-3. I send the video back!
+3. Get MP3 instantly — FREE!
 
-/unlimited - Remove daily limits""")
+This bot is completely free.
+If you find it useful, /donate to keep it running! ❤️""")
 
-async def unlimited(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if get_user(user_id).get("unlimited"):
-        await update.message.reply_text("You already have Unlimited Access!")
-        return
-    await update.message.reply_text(f"Upgrade to Unlimited\n\nPrice: {config.UNLIMITED_PRICE_STARS} Telegram Stars\n\nSend /buy to upgrade!\n\nContact {config.SUPPORT_CONTACT}")
+async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("⭐ Send 50 Stars", callback_data="stars_50")],
+        [InlineKeyboardButton("⭐ Send 100 Stars", callback_data="stars_100")],
+        [InlineKeyboardButton("⭐ Send 250 Stars", callback_data="stars_250")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("""❤️ Support the Bot
 
-async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Send {config.UNLIMITED_PRICE_STARS} Stars to this bot\nThen type: /confirm YOUR_TX_ID\n\nContact {config.SUPPORT_CONTACT} for help")
+This bot is free for everyone!
+If you find it useful, please consider donating Telegram Stars to keep the servers running.
 
-async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if get_user(user_id).get("unlimited"):
-        await update.message.reply_text("You already have Unlimited Access!")
-        return
-    args = context.args
-    if not args:
-        await update.message.reply_text("Usage: /confirm YOUR_TX_ID")
-        return
-    update_user(user_id, 0, date.today().isoformat(), unlimited=True)
-    await update.message.reply_text("UPGRADED TO UNLIMITED! No more daily limits!")
-    await context.bot.send_message(chat_id=config.OWNER_ID, text=f"NEW PAYMENT!\nUser: {user_id}\nTX: {args[0]}")
+Every donation helps! Thank you 🙏""", reply_markup=reply_markup)
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    if user.get("unlimited"):
-        await update.message.reply_text("Status: Unlimited!")
-        return
-    today = date.today().isoformat()
-    remaining = config.DAILY_LIMIT_FREE if user.get("last_date") != today else config.DAILY_LIMIT_FREE - user.get("downloads_today", 0)
-    await update.message.reply_text(f"Free Tier\nRemaining: {remaining}/{config.DAILY_LIMIT_FREE}\n\n/unlimited to remove limits")
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "donate":
+        await donate(update, context)
+    elif query.data.startswith("stars_"):
+        amount = query.data.split("_")[1]
+        await query.message.reply_text(f"Thank you for wanting to donate {amount} Stars! ⭐\n\nPlease send {amount} Stars directly to this bot via Telegram.\n\nThank you for supporting the bot! ❤️")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != config.OWNER_ID:
         return
     users = load_users()
-    unlimited_users = sum(1 for u in users.values() if u.get("unlimited"))
-    await update.message.reply_text(f"Total users: {len(users)}\nUnlimited: {unlimited_users}\nEarnings: ${unlimited_users * 5}")
+    total = len(users)
+    total_downloads = sum(u.get("downloads", 0) for u in users.values())
+    await update.message.reply_text(f"📊 Bot Statistics\n\nTotal users: {total}\nTotal downloads: {total_downloads}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -131,90 +98,67 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not url.startswith(('http://', 'https://')):
         return
 
-    allowed, remaining = can_download(user_id)
-    if not allowed:
-        await update.message.reply_text(f"Daily limit reached!\n\n/unlimited - Remove limits for {config.UNLIMITED_PRICE_STARS} Stars")
+    if "youtu" not in url:
+        await update.message.reply_text("Please send a YouTube link!\n\nExample: https://youtube.com/watch?v=...")
         return
 
-    platform = "video"
-    if "youtu" in url:
-        platform = "YouTube"
-    elif "tiktok" in url:
-        platform = "TikTok"
-    elif "instagram" in url:
-        platform = "Instagram"
-    elif "twitter" in url or "x.com" in url:
-        platform = "Twitter"
-    elif "facebook" in url:
-        platform = "Facebook"
-    elif "reddit" in url:
-        platform = "Reddit"
-
-    status_msg = await update.message.reply_text(f"Downloading from {platform}... please wait.")
+    status_msg = await update.message.reply_text("⏳ Downloading... please wait (30-60 seconds)")
 
     try:
-        video_url = None
-        title = "video"
+        import yt_dlp
 
-        async with aiohttp.ClientSession() as session:
-            # Try tikwm API (works for TikTok, Instagram, Twitter)
-            if platform in ["TikTok", "Instagram", "Twitter"]:
-                async with session.get(f"https://tikwm.com/api/?url={url}") as resp:
-                    data = await resp.json()
-                if data.get("code") == 0:
-                    video_url = data["data"].get("play") or data["data"].get("wmplay")
-                    title = data["data"].get("title", "video")[:50]
+        output_path = f"/tmp/{user_id}_%(id)s.%(ext)s"
 
-            # Try yt-dlp API proxy for YouTube
-            if not video_url and platform == "YouTube":
-                async with session.get(
-                    f"https://api.vevioz.com/api/button/mp4/{url.split('v=')[-1].split('&')[0] if 'v=' in url else url.split('/')[-1]}"
-                ) as resp:
-                    pass
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': output_path,
+            'quiet': True,
+            'no_warnings': True,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
 
-            # Fallback: try y2mate API
-            if not video_url:
-                async with session.post(
-                    "https://www.y2mate.com/mates/analyzeV2/ajax",
-                    data={"k_query": url, "k_page": "home", "hl": "en", "q_auto": 0}
-                ) as resp:
-                    data = await resp.json()
-                    if data.get("status") == "Ok":
-                        links = data.get("links", {}).get("mp4", {})
-                        for key, val in links.items():
-                            if val.get("f") == "mp4":
-                                video_url = val.get("url")
-                                title = data.get("title", "video")[:50]
-                                break
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'audio')[:50]
 
-        if video_url:
-            await update.message.reply_video(
-                video_url,
-                caption=f"Downloaded: {title}\nFrom: {platform}\n\n/unlimited - Remove limits",
-                supports_streaming=True
+        files = glob.glob(f"/tmp/{user_id}_*.mp3")
+        if not files:
+            raise Exception("File not found")
+
+        audio_file = files[0]
+
+        keyboard = [[InlineKeyboardButton("❤️ Support the bot", callback_data="donate")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        with open(audio_file, 'rb') as f:
+            await update.message.reply_audio(
+                f,
+                title=title,
+                caption=f"🎵 {title}\n\n❤️ This bot is free! Support it with /donate",
+                reply_markup=reply_markup
             )
-            increment_download(user_id)
-            await status_msg.delete()
-            if not get_user(user_id).get("unlimited"):
-                _, rem = can_download(user_id)
-                if rem > 0:
-                    await update.message.reply_text(f"{rem}/{config.DAILY_LIMIT_FREE} downloads remaining today.")
-        else:
-            raise Exception("No video URL found")
+
+        os.remove(audio_file)
+        increment_download(user_id)
+        await status_msg.delete()
 
     except Exception as e:
-        await status_msg.edit_text(f"Download failed from {platform}.\n\nTry a different link or contact {config.SUPPORT_CONTACT}")
+        await status_msg.edit_text(
+            f"❌ Download failed.\n\nPossible reasons:\n- Video is age restricted\n- Video is private\n- Video is too long\n\nContact {config.SUPPORT_CONTACT}"
+        )
         print(f"Error: {e}")
 
 def main():
     app = Application.builder().token(config.BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("unlimited", unlimited))
-    app.add_handler(CommandHandler("buy", buy))
-    app.add_handler(CommandHandler("confirm", confirm))
-    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("donate", donate))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("BOT IS RUNNING!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
